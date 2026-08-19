@@ -1,0 +1,173 @@
+Sub BuscarDatosAlumnos()
+    Dim oDialog As Object
+    Dim sFileURL As String
+    Dim oDocExterno As Object
+    Dim oHojaExterna As Object
+    Dim oHojaDatos As Object
+    Dim oHojaSalida As Object
+    Dim oDocActual As Object
+    
+    Dim iFilaDatos As Long
+    Dim iFilaExterna As Long
+    Dim iFilaSalida As Long
+    Dim sDocumentoBuscar As String
+    Dim sDocumentoExterno As String
+    Dim sNombreExterno As String
+    Dim sEmailExterno As String
+    Dim bEncontrado As Boolean
+    Dim iUltimaFilaDatos As Long
+    Dim iUltimaFilaExterna As Long
+    Dim iInicioExterno As Long
+    
+    ' Documento actual
+    oDocActual = ThisComponent
+    
+    ' Verificar hojas
+    If Not oDocActual.Sheets.hasByName("DATOS") Then
+        MsgBox "No se encontró la hoja 'DATOS'.", 48, "Error"
+        Exit Sub
+    End If
+    If Not oDocActual.Sheets.hasByName("SALIDA") Then
+        MsgBox "No se encontró la hoja 'SALIDA'.", 48, "Error"
+        Exit Sub
+    End If
+    
+    oHojaDatos = oDocActual.Sheets.getByName("DATOS")
+    oHojaSalida = oDocActual.Sheets.getByName("SALIDA")
+    
+    ' Diálogo de archivo
+    oDialog = CreateUnoService("com.sun.star.ui.dialogs.FilePicker")
+    oDialog.appendFilter("Archivos de Calc (*.ods)", "*.ods")
+    oDialog.appendFilter("Archivos Excel (*.xls, *.xlsx)", "*.xls;*.xlsx")
+    oDialog.appendFilter("Todos los archivos (*.*)", "*.*")
+    oDialog.setTitle("Seleccione el archivo con todos los alumnos de la carrera")
+    
+    If oDialog.execute() = 1 Then
+        sFileURL = oDialog.Files(0)
+    Else
+        MsgBox "No se seleccionó ningún archivo.", 48, "Cancelado"
+        Exit Sub
+    End If
+    
+    ' Abrir documento externo
+    oDocExterno = StarDesktop.loadComponentFromURL(sFileURL, "_blank", 0, Array())
+    If IsNull(oDocExterno) Then
+        MsgBox "No se pudo abrir el archivo seleccionado.", 16, "Error"
+        Exit Sub
+    End If
+    
+    oHojaExterna = oDocExterno.Sheets.getByIndex(0)
+    
+    ' Limpiar SALIDA
+    oHojaSalida.getCellRangeByPosition(0, 1, 2, 10000).clearContents(1023)
+    
+    ' Encabezados
+    oHojaSalida.getCellByPosition(0, 0).setString("Apellido y Nombre")
+    oHojaSalida.getCellByPosition(1, 0).setString("N° Documento")
+    oHojaSalida.getCellByPosition(2, 0).setString("Email")
+    
+    ' Última fila en DATOS (columna D = índice 3)
+    iUltimaFilaDatos = UltimaFilaConDatos(oHojaDatos, 3, 1, 5000)
+    
+    ' En el externo, datos desde fila 9
+    iInicioExterno = 9
+    iUltimaFilaExterna = UltimaFilaConDatosDual(oHojaExterna, 0, 1, iInicioExterno, 10000)
+    
+    iFilaSalida = 1
+    
+    ' Recorrer alumnos en DATOS
+    For iFilaDatos = 1 To iUltimaFilaDatos
+        sDocumentoBuscar = NormalizarDocumento(ObtenerTextoCelda(oHojaDatos, 3, iFilaDatos))
+        If sDocumentoBuscar = "" Then Exit For
+        
+        bEncontrado = False
+        
+        ' Buscar en externo: Nombre en A(0), DNI en B(1), Email en C(2)
+        For iFilaExterna = iInicioExterno To iUltimaFilaExterna
+            sDocumentoExterno = NormalizarDocumento(ObtenerTextoCelda(oHojaExterna, 1, iFilaExterna))
+            
+            If sDocumentoExterno <> "" And sDocumentoExterno = sDocumentoBuscar Then
+                sNombreExterno = ObtenerTextoCelda(oHojaExterna, 0, iFilaExterna)
+                sEmailExterno  = ObtenerTextoCelda(oHojaExterna, 2, iFilaExterna)
+                
+                oHojaSalida.getCellByPosition(0, iFilaSalida).setString(sNombreExterno)
+                oHojaSalida.getCellByPosition(1, iFilaSalida).setString( _
+                    LimpiarDNI(ObtenerTextoCelda(oHojaDatos, 1, iFilaDatos)))
+                oHojaSalida.getCellByPosition(2, iFilaSalida).setString(sEmailExterno)
+                
+                iFilaSalida = iFilaSalida + 1
+                bEncontrado = True
+                Exit For
+            End If
+        Next iFilaExterna
+        
+        ' Si no se encontró
+        If Not bEncontrado Then
+            oHojaSalida.getCellByPosition(0, iFilaSalida).setString( _
+                ObtenerTextoCelda(oHojaDatos, 0, iFilaDatos))
+            oHojaSalida.getCellByPosition(1, iFilaSalida).setString( _
+                LimpiarDNI(ObtenerTextoCelda(oHojaDatos, 1, iFilaDatos)))
+            oHojaSalida.getCellByPosition(2, iFilaSalida).setString("NO ENCONTRADO")
+            iFilaSalida = iFilaSalida + 1
+        End If
+    Next iFilaDatos
+    
+    ' Cerrar externo
+    oDocExterno.close(False)
+    
+    MsgBox "Proceso completado. Se procesaron " & (iFilaSalida - 1) & " alumnos.", 64, "Finalizado"
+End Sub
+
+' ===== Helpers =====
+
+Function ObtenerTextoCelda(oHoja As Object, iCol As Long, iFila As Long) As String
+    Dim s As String
+    s = Trim(oHoja.getCellByPosition(iCol, iFila).getString())
+    If s = "" Then
+        Dim v
+        v = oHoja.getCellByPosition(iCol, iFila).getValue()
+        If v <> 0 Then s = Trim(CStr(v))
+    End If
+    ObtenerTextoCelda = s
+End Function
+
+Function NormalizarDocumento(sCadena As String) As String
+    Dim i As Integer, sResultado As String, c As String
+    sResultado = ""
+    For i = 1 To Len(sCadena)
+        c = Mid(sCadena, i, 1)
+        If c >= "0" And c <= "9" Then sResultado = sResultado & c
+    Next i
+    NormalizarDocumento = sResultado
+End Function
+
+Function LimpiarDNI(sCadena As String) As String
+    Dim s As String
+    s = Trim(sCadena)
+    If UCase(Left(s, 4)) = "DNI " Then s = Mid(s, 5)
+    s = NormalizarDocumento(s)
+    LimpiarDNI = s
+End Function
+
+Function UltimaFilaConDatos(oHoja As Object, iCol As Long, filaInicio As Long, limite As Long) As Long
+    Dim f As Long
+    f = filaInicio
+    Do While ObtenerTextoCelda(oHoja, iCol, f) <> ""
+        f = f + 1
+        If f > limite Then Exit Do
+    Loop
+    UltimaFilaConDatos = f - 1
+End Function
+
+Function UltimaFilaConDatosDual(oHoja As Object, iCol1 As Long, iCol2 As Long, filaInicio As Long, limite As Long) As Long
+    Dim f As Long, s1 As String, s2 As String
+    f = filaInicio
+    Do
+        s1 = ObtenerTextoCelda(oHoja, iCol1, f)
+        s2 = ObtenerTextoCelda(oHoja, iCol2, f)
+        If s1 = "" And s2 = "" Then Exit Do
+        f = f + 1
+        If f > limite Then Exit Do
+    Loop
+    UltimaFilaConDatosDual = f - 1
+End Function
