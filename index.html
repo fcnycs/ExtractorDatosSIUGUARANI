@@ -1,173 +1,583 @@
+REM  ==========================================================================
+REM  EXTRACTOR DE DATOS - SIU GUARANI   (v3 - modo acumulativo)
+REM  --------------------------------------------------------------------------
+REM  Hoja DATOS  : A = Nombre completo   B = Documento (en cualquier formato)
+REM  Hoja SALIDA : A = Nombre  B = Documento  C = Email  D = Telefono
+REM                E = Estado  F = Origen (de que base salio)
+REM                G2 = todos los correos juntos, listos para pegar en CCO
+REM
+REM  MODO ACUMULATIVO: se puede ejecutar varias veces seguidas con distintas
+REM  bases. Un correo que YA esta cargado en SALIDA nunca se pisa.
+REM    - Celda C vacia  -> se completa con lo que encuentre en esta base.
+REM    - Celda C cargada -> se respeta, aunque en esta base no lo encuentre.
+REM    - Si en esta base figura OTRO correo -> se conserva el que ya estaba
+REM      y se avisa en la columna Estado y en el resumen final.
+REM  Para arrancar de cero, boton LIMPIAR.
+REM  ==========================================================================
+
+Option Explicit
+
+
 Sub BuscarDatosAlumnos()
-    Dim oDialog As Object
-    Dim sFileURL As String
-    Dim oDocExterno As Object
-    Dim oHojaExterna As Object
-    Dim oHojaDatos As Object
-    Dim oHojaSalida As Object
-    Dim oDocActual As Object
-    
-    Dim iFilaDatos As Long
-    Dim iFilaExterna As Long
-    Dim iFilaSalida As Long
-    Dim sDocumentoBuscar As String
-    Dim sDocumentoExterno As String
-    Dim sNombreExterno As String
-    Dim sEmailExterno As String
-    Dim bEncontrado As Boolean
-    Dim iUltimaFilaDatos As Long
-    Dim iUltimaFilaExterna As Long
-    Dim iInicioExterno As Long
-    
-    ' Documento actual
-    oDocActual = ThisComponent
-    
-    ' Verificar hojas
-    If Not oDocActual.Sheets.hasByName("DATOS") Then
-        MsgBox "No se encontró la hoja 'DATOS'.", 48, "Error"
+
+    Dim oDoc As Object, oDatos As Object, oSalida As Object
+    Dim oDocExt As Object, oHojaExt As Object
+    Dim oDlg As Object, oCur As Object
+    Dim aArgs(0) As New com.sun.star.beans.PropertyValue
+    Dim sURL As String, sOrigen As String
+    Dim bLoAbriYo As Boolean
+
+    Dim nCab As Long, cNom As Long, cDoc As Long, cMail As Long, cTel As Long
+    Dim nUltExt As Long, nUltDat As Long, nUltSal As Long, nColMax As Long
+    Dim aExt, aDat, aSal
+    Dim i As Long, nP As Long, nS As Long
+
+    Dim aPDoc() As String, aPNom() As String, aPCla() As String
+    Dim aSDoc() As String, aSNom() As String, aSCla() As String
+
+    Dim sNomBus As String, sDocBus As String
+    Dim sDocNorm As String, sNomNorm As String, sClaBus As String
+    Dim nEnc As Long, nAnt As Long
+    Dim sComo As String, sComoAnt As String, sEstado As String
+
+    Dim sAntNom As String, sAntDoc As String, sAntMail As String
+    Dim sAntTel As String, sAntOri As String
+    Dim sNueNom As String, sNueDoc As String, sNueMail As String, sNueTel As String
+    Dim sSalNom As String, sSalDoc As String, sSalMail As String
+    Dim sSalTel As String, sSalOri As String
+
+    Dim bConflicto As Boolean
+    Dim sMails As String, sMailsKey As String
+    Dim sAvisos As String, nAvisos As Long
+    Dim fila As Long
+    Dim nOK As Long, nSin As Long, nNo As Long, nAmb As Long, nConf As Long
+
+    oDoc = ThisComponent
+
+    ' ---------- 1. Verificar las hojas ------------------------------------
+    If Not oDoc.Sheets.hasByName("DATOS") Then
+        MsgBox "No se encontro la hoja 'DATOS'.", 48, "Error"
         Exit Sub
     End If
-    If Not oDocActual.Sheets.hasByName("SALIDA") Then
-        MsgBox "No se encontró la hoja 'SALIDA'.", 48, "Error"
+    If Not oDoc.Sheets.hasByName("SALIDA") Then
+        MsgBox "No se encontro la hoja 'SALIDA'.", 48, "Error"
         Exit Sub
     End If
-    
-    oHojaDatos = oDocActual.Sheets.getByName("DATOS")
-    oHojaSalida = oDocActual.Sheets.getByName("SALIDA")
-    
-    ' Diálogo de archivo
-    oDialog = CreateUnoService("com.sun.star.ui.dialogs.FilePicker")
-    oDialog.appendFilter("Archivos de Calc (*.ods)", "*.ods")
-    oDialog.appendFilter("Archivos Excel (*.xls, *.xlsx)", "*.xls;*.xlsx")
-    oDialog.appendFilter("Todos los archivos (*.*)", "*.*")
-    oDialog.setTitle("Seleccione el archivo con todos los alumnos de la carrera")
-    
-    If oDialog.execute() = 1 Then
-        sFileURL = oDialog.Files(0)
-    Else
-        MsgBox "No se seleccionó ningún archivo.", 48, "Cancelado"
+    oDatos  = oDoc.Sheets.getByName("DATOS")
+    oSalida = oDoc.Sheets.getByName("SALIDA")
+
+    ' ---------- 2. Elegir el archivo del padron ---------------------------
+    oDlg = CreateUnoService("com.sun.star.ui.dialogs.FilePicker")
+    oDlg.appendFilter("Planillas (*.xlsx, *.xls, *.ods)", "*.xlsx;*.xls;*.ods")
+    oDlg.appendFilter("Todos los archivos (*.*)", "*.*")
+    oDlg.setTitle("Seleccione el archivo con todos los alumnos de la carrera")
+    If oDlg.execute() <> 1 Then
         Exit Sub
     End If
-    
-    ' Abrir documento externo
-    oDocExterno = StarDesktop.loadComponentFromURL(sFileURL, "_blank", 0, Array())
-    If IsNull(oDocExterno) Then
+    sURL    = oDlg.Files(0)
+    sOrigen = NombreDeArchivo(sURL)
+
+    If sURL = oDoc.getURL() Then
+        MsgBox "Elegiste este mismo archivo. Tenes que elegir el listado de la carrera " & _
+               "que bajaste del SIU Guarani.", 48, "Archivo incorrecto"
+        Exit Sub
+    End If
+
+    ' ---------- 3. Abrir el padron (si ya esta abierto, lo reutiliza) ------
+    oDocExt = BuscarDocAbierto(sURL)
+    If IsNull(oDocExt) Then
+        aArgs(0).Name  = "Hidden"
+        aArgs(0).Value = True
+        oDocExt = StarDesktop.loadComponentFromURL(sURL, "_blank", 0, aArgs())
+        bLoAbriYo = True
+    End If
+    If IsNull(oDocExt) Then
         MsgBox "No se pudo abrir el archivo seleccionado.", 16, "Error"
         Exit Sub
     End If
-    
-    oHojaExterna = oDocExterno.Sheets.getByIndex(0)
-    
-    ' Limpiar SALIDA
-    oHojaSalida.getCellRangeByPosition(0, 1, 2, 10000).clearContents(1023)
-    
-    ' Encabezados
-    oHojaSalida.getCellByPosition(0, 0).setString("Apellido y Nombre")
-    oHojaSalida.getCellByPosition(1, 0).setString("N° Documento")
-    oHojaSalida.getCellByPosition(2, 0).setString("Email")
-    
-    ' Última fila en DATOS (columna D = índice 3)
-    iUltimaFilaDatos = UltimaFilaConDatos(oHojaDatos, 3, 1, 5000)
-    
-    ' En el externo, datos desde fila 9
-    iInicioExterno = 9
-    iUltimaFilaExterna = UltimaFilaConDatosDual(oHojaExterna, 0, 1, iInicioExterno, 10000)
-    
-    iFilaSalida = 1
-    
-    ' Recorrer alumnos en DATOS
-    For iFilaDatos = 1 To iUltimaFilaDatos
-        sDocumentoBuscar = NormalizarDocumento(ObtenerTextoCelda(oHojaDatos, 3, iFilaDatos))
-        If sDocumentoBuscar = "" Then Exit For
-        
-        bEncontrado = False
-        
-        ' Buscar en externo: Nombre en A(0), DNI en B(1), Email en C(2)
-        For iFilaExterna = iInicioExterno To iUltimaFilaExterna
-            sDocumentoExterno = NormalizarDocumento(ObtenerTextoCelda(oHojaExterna, 1, iFilaExterna))
-            
-            If sDocumentoExterno <> "" And sDocumentoExterno = sDocumentoBuscar Then
-                sNombreExterno = ObtenerTextoCelda(oHojaExterna, 0, iFilaExterna)
-                sEmailExterno  = ObtenerTextoCelda(oHojaExterna, 2, iFilaExterna)
-                
-                oHojaSalida.getCellByPosition(0, iFilaSalida).setString(sNombreExterno)
-                oHojaSalida.getCellByPosition(1, iFilaSalida).setString( _
-                    LimpiarDNI(ObtenerTextoCelda(oHojaDatos, 1, iFilaDatos)))
-                oHojaSalida.getCellByPosition(2, iFilaSalida).setString(sEmailExterno)
-                
-                iFilaSalida = iFilaSalida + 1
-                bEncontrado = True
-                Exit For
-            End If
-        Next iFilaExterna
-        
-        ' Si no se encontró
-        If Not bEncontrado Then
-            oHojaSalida.getCellByPosition(0, iFilaSalida).setString( _
-                ObtenerTextoCelda(oHojaDatos, 0, iFilaDatos))
-            oHojaSalida.getCellByPosition(1, iFilaSalida).setString( _
-                LimpiarDNI(ObtenerTextoCelda(oHojaDatos, 1, iFilaDatos)))
-            oHojaSalida.getCellByPosition(2, iFilaSalida).setString("NO ENCONTRADO")
-            iFilaSalida = iFilaSalida + 1
+    oHojaExt = oDocExt.Sheets.getByIndex(0)
+
+    ' ---------- 4. Detectar la fila de encabezados y las columnas ----------
+    nCab = DetectarCabecera(oHojaExt, cNom, cDoc, cMail, cTel)
+    If nCab < 0 Then
+        If bLoAbriYo Then oDocExt.close(False)
+        MsgBox "No encontre los encabezados en el archivo elegido." & Chr(10) & Chr(10) & _
+               "Se esperaba una fila con 'Apellido y Nombre', 'Tipo y N Documento' y 'Email'." & _
+               Chr(10) & "Fijate que sea el reporte de 'Alumnos por Actividad Academica'.", _
+               48, "Formato no reconocido"
+        Exit Sub
+    End If
+
+    oCur = oHojaExt.createCursor()
+    oCur.gotoEndOfUsedArea(False)
+    nUltExt = oCur.RangeAddress.EndRow
+    If nUltExt > 60000 Then nUltExt = 60000
+    If nUltExt <= nCab Then
+        If bLoAbriYo Then oDocExt.close(False)
+        MsgBox "El archivo elegido no tiene alumnos cargados.", 48, "Sin datos"
+        Exit Sub
+    End If
+
+    nColMax = cNom
+    If cDoc  > nColMax Then nColMax = cDoc
+    If cMail > nColMax Then nColMax = cMail
+    If cTel  > nColMax Then nColMax = cTel
+
+    ' Se lee TODO el padron de una sola vez (rapidisimo comparado con celda por celda)
+    aExt = oHojaExt.getCellRangeByPosition(0, nCab + 1, nColMax, nUltExt).getDataArray()
+    If bLoAbriYo Then oDocExt.close(False)
+
+    ' ---------- 5. Pre-normalizar el padron -------------------------------
+    nP = UBound(aExt)
+    ReDim aPDoc(nP)
+    ReDim aPNom(nP)
+    ReDim aPCla(nP)
+    For i = 0 To nP
+        If cDoc >= 0 Then
+            aPDoc(i) = NormDoc(ATexto(aExt(i)(cDoc)))
         End If
-    Next iFilaDatos
-    
-    ' Cerrar externo
-    oDocExterno.close(False)
-    
-    MsgBox "Proceso completado. Se procesaron " & (iFilaSalida - 1) & " alumnos.", 64, "Finalizado"
+        If cNom >= 0 Then
+            aPNom(i) = TextoNormal(ATexto(aExt(i)(cNom)))
+            aPCla(i) = ClaveNombre(aPNom(i))
+        End If
+    Next i
+
+    ' ---------- 6. Leer lo que YA hay en SALIDA (corridas anteriores) ------
+    nS = -1
+    oCur = oSalida.createCursor()
+    oCur.gotoEndOfUsedArea(False)
+    nUltSal = oCur.RangeAddress.EndRow
+    If nUltSal > 5000 Then nUltSal = 5000
+    If nUltSal >= 1 Then
+        aSal = oSalida.getCellRangeByPosition(0, 1, 5, nUltSal).getDataArray()
+        nS   = UBound(aSal)
+        ReDim aSDoc(nS)
+        ReDim aSNom(nS)
+        ReDim aSCla(nS)
+        For i = 0 To nS
+            aSDoc(i) = NormDoc(ATexto(aSal(i)(1)))
+            aSNom(i) = TextoNormal(ATexto(aSal(i)(0)))
+            aSCla(i) = ClaveNombre(aSNom(i))
+        Next i
+    End If
+
+    ' ---------- 7. Leer la lista de alumnos a buscar ----------------------
+    oCur = oDatos.createCursor()
+    oCur.gotoEndOfUsedArea(False)
+    nUltDat = oCur.RangeAddress.EndRow
+    If nUltDat > 5000 Then nUltDat = 5000
+    If nUltDat < 1 Then
+        MsgBox "No hay alumnos cargados en la hoja DATOS.", 48, "Sin datos"
+        Exit Sub
+    End If
+    aDat = oDatos.getCellRangeByPosition(0, 1, 1, nUltDat).getDataArray()
+
+    ' ---------- 8. Preparar la hoja SALIDA --------------------------------
+    ' 23 = valores + fechas + texto + formulas (NO borra el formato de la hoja)
+    oSalida.getCellRangeByPosition(0, 1, 6, 5000).clearContents(23)
+    oSalida.getCellRangeByPosition(0, 1, 6, 5000).CellBackColor = -1
+
+    oSalida.getCellByPosition(0, 0).setString("Apellido y Nombre")
+    oSalida.getCellByPosition(1, 0).setString("N Documento")
+    oSalida.getCellByPosition(2, 0).setString("Email")
+    oSalida.getCellByPosition(3, 0).setString("Telefono")
+    oSalida.getCellByPosition(4, 0).setString("Estado")
+    oSalida.getCellByPosition(5, 0).setString("Origen")
+    oSalida.getCellByPosition(6, 0).setString("Correos (pegar en CCO)")
+
+    ' ---------- 9. Buscar cada alumno -------------------------------------
+    fila = 1
+    For i = 0 To UBound(aDat)
+
+        sNomBus = ATexto(aDat(i)(0))
+        sDocBus = ATexto(aDat(i)(1))
+
+        ' Una fila vacia se saltea: NO corta el proceso
+        If sNomBus <> "" Or sDocBus <> "" Then
+
+            sDocNorm = NormDoc(sDocBus)
+            sNomNorm = TextoNormal(sNomBus)
+            sClaBus  = ClaveNombre(sNomNorm)
+
+            ' --- 9a. Lo que ya teniamos de corridas anteriores ---
+            sAntNom = "" : sAntDoc = "" : sAntMail = "" : sAntTel = "" : sAntOri = ""
+            nAnt = -1
+            If nS >= 0 Then
+                nAnt = BuscarEnLista(sDocNorm, sNomNorm, sClaBus, _
+                                     aSDoc(), aSNom(), aSCla(), nS, sComoAnt)
+                If nAnt >= 0 Then
+                    sAntNom  = ATexto(aSal(nAnt)(0))
+                    sAntDoc  = ATexto(aSal(nAnt)(1))
+                    sAntMail = ATexto(aSal(nAnt)(2))
+                    sAntTel  = ATexto(aSal(nAnt)(3))
+                    sAntOri  = ATexto(aSal(nAnt)(5))
+                End If
+            End If
+            ' Solo se considera correo lo que realmente parece un correo
+            If InStr(1, sAntMail, "@", 0) = 0 Then sAntMail = ""
+
+            ' --- 9b. Busqueda en la base elegida ahora ---
+            nEnc = BuscarEnLista(sDocNorm, sNomNorm, sClaBus, _
+                                 aPDoc(), aPNom(), aPCla(), nP, sComo)
+
+            sNueNom = "" : sNueDoc = "" : sNueMail = "" : sNueTel = ""
+            If nEnc >= 0 Then
+                If cNom >= 0 Then sNueNom = ATexto(aExt(nEnc)(cNom))
+                If cDoc >= 0 Then sNueDoc = ATexto(aExt(nEnc)(cDoc))
+                sNueMail = ATexto(aExt(nEnc)(cMail))
+                If cTel >= 0 Then sNueTel = ATexto(aExt(nEnc)(cTel))
+            End If
+
+            ' --- 9c. Merge: el correo que ya estaba MANDA ---
+            bConflicto = False
+            If sAntMail <> "" And sNueMail <> "" Then
+                If LCase(sAntMail) <> LCase(sNueMail) Then bConflicto = True
+            End If
+
+            If sAntMail <> "" Then
+                sSalMail = sAntMail
+                sSalNom  = sAntNom
+                sSalDoc  = sAntDoc
+                sSalTel  = sAntTel
+                sSalOri  = sAntOri
+                If sSalTel = "" Then sSalTel = sNueTel
+            ElseIf nEnc >= 0 Then
+                sSalMail = sNueMail
+                sSalNom  = sNueNom
+                sSalDoc  = sNueDoc
+                sSalTel  = sNueTel
+                sSalOri  = ""
+                If sSalMail <> "" Then sSalOri = sOrigen
+                If sSalTel = "" Then sSalTel = sAntTel
+            ElseIf nAnt >= 0 Then
+                sSalMail = ""
+                sSalNom  = sAntNom
+                sSalDoc  = sAntDoc
+                sSalTel  = sAntTel
+                sSalOri  = sAntOri
+            Else
+                sSalMail = "" : sSalNom = "" : sSalDoc = "" : sSalTel = "" : sSalOri = ""
+            End If
+            If sSalNom = "" Then sSalNom = sNomBus
+            If sSalDoc = "" Then sSalDoc = sDocBus
+
+            ' --- 9d. Estado ---
+            If sSalMail <> "" Then
+                nOK = nOK + 1
+                If bConflicto Then
+                    nConf   = nConf + 1
+                    sEstado = "OJO: en esta base figura " & sNueMail
+                    If nAvisos < 10 Then
+                        sAvisos = sAvisos & Chr(10) & "  - " & sSalNom & Chr(10) & _
+                                  "      se conservo: " & sSalMail & Chr(10) & _
+                                  "      en esta base: " & sNueMail & Chr(10)
+                    End If
+                    nAvisos = nAvisos + 1
+                ElseIf sAntMail <> "" And nEnc >= 0 Then
+                    sEstado = "OK (confirmado tambien en esta base)"
+                ElseIf sAntMail <> "" Then
+                    sEstado = "OK (ya cargado de una base anterior)"
+                Else
+                    sEstado = "OK (" & sComo & ")"
+                End If
+            ElseIf nEnc >= 0 Then
+                nSin    = nSin + 1
+                sEstado = "SIN EMAIL EN EL PADRON"
+            ElseIf Left(sComo, 7) = "AMBIGUO" Then
+                nAmb    = nAmb + 1
+                sEstado = sComo
+            Else
+                nNo     = nNo + 1
+                sEstado = "NO ENCONTRADO"
+            End If
+
+            ' --- 9e. Escribir ---
+            oSalida.getCellByPosition(0, fila).setString(sSalNom)
+            oSalida.getCellByPosition(1, fila).setString(sSalDoc)
+            oSalida.getCellByPosition(2, fila).setString(sSalMail)
+            oSalida.getCellByPosition(3, fila).setString(sSalTel)
+            oSalida.getCellByPosition(4, fila).setString(sEstado)
+            oSalida.getCellByPosition(5, fila).setString(sSalOri)
+
+            ' Semaforo: naranja = correos distintos / rojo = sin nada / amarillo = sin mail
+            If bConflicto Then
+                oSalida.getCellRangeByPosition(0, fila, 5, fila).CellBackColor = RGB(255, 214, 165)
+            ElseIf sSalMail = "" And nEnc < 0 Then
+                oSalida.getCellRangeByPosition(0, fila, 5, fila).CellBackColor = RGB(255, 205, 205)
+            ElseIf sSalMail = "" Then
+                oSalida.getCellRangeByPosition(0, fila, 5, fila).CellBackColor = RGB(255, 242, 190)
+            End If
+
+            ' Lista de correos para CCO (sin repetidos)
+            If sSalMail <> "" Then
+                If InStr(1, sMailsKey, ";" & LCase(sSalMail) & ";", 0) = 0 Then
+                    sMailsKey = sMailsKey & ";" & LCase(sSalMail) & ";"
+                    If sMails = "" Then
+                        sMails = sSalMail
+                    Else
+                        sMails = sMails & "; " & sSalMail
+                    End If
+                End If
+            End If
+
+            fila = fila + 1
+        End If
+    Next i
+
+    oSalida.getCellByPosition(6, 1).setString(sMails)
+
+    ' ---------- 10. Resumen -----------------------------------------------
+    sEstado = "Base consultada: " & sOrigen & Chr(10) & Chr(10) & _
+              "Alumnos procesados......: " & (fila - 1) & Chr(10) & _
+              "Con email...............: " & nOK & Chr(10) & _
+              "Sin email en el padron..: " & nSin & Chr(10) & _
+              "No encontrados..........: " & nNo & Chr(10) & _
+              "Ambiguos (revisar)......: " & nAmb
+
+    If nConf > 0 Then
+        sEstado = sEstado & Chr(10) & Chr(10) & _
+                  "ATENCION: " & nConf & " alumno(s) tienen en esta base un correo " & _
+                  "distinto al que ya estaba cargado." & Chr(10) & _
+                  "Se conservo el que ya tenias. Si preferis el de esta base, " & _
+                  "borra la celda del correo y volve a ejecutar." & Chr(10) & sAvisos
+        If nAvisos > 10 Then
+            sEstado = sEstado & Chr(10) & "  ...y " & (nAvisos - 10) & " mas (mira la columna Estado)."
+        End If
+    End If
+
+    sEstado = sEstado & Chr(10) & Chr(10) & _
+              "Los correos que ya estaban cargados se respetaron." & Chr(10) & _
+              "Podes volver a ejecutar con otra base para completar los que faltan." & Chr(10) & _
+              "Para empezar de cero, usa el boton LIMPIAR." & Chr(10) & Chr(10) & _
+              "En G2 tenes todos los correos juntos para pegar en CCO."
+
+    If nConf > 0 Then
+        MsgBox sEstado, 48, "Finalizado - con avisos"
+    Else
+        MsgBox sEstado, 64, "Finalizado"
+    End If
+
 End Sub
 
-' ===== Helpers =====
 
-Function ObtenerTextoCelda(oHoja As Object, iCol As Long, iFila As Long) As String
-    Dim s As String
-    s = Trim(oHoja.getCellByPosition(iCol, iFila).getString())
-    If s = "" Then
-        Dim v
-        v = oHoja.getCellByPosition(iCol, iFila).getValue()
-        If v <> 0 Then s = Trim(CStr(v))
+REM  ==========================================================================
+REM  FUNCIONES AUXILIARES
+REM  ==========================================================================
+
+' Busca un alumno dentro de una lista ya normalizada.
+' Devuelve el indice encontrado o -1. En sComo deja como lo encontro.
+Function BuscarEnLista(sDocNorm As String, sNomNorm As String, sClaBus As String, _
+                       aDoc() As String, aNom() As String, aCla() As String, _
+                       nTope As Long, ByRef sComo As String) As Long
+
+    Dim j As Long, k As Long, nCand As Long, bTodas As Boolean
+    Dim aPal() As String
+
+    sComo = ""
+    BuscarEnLista = -1
+    If nTope < 0 Then Exit Function
+
+    ' 1) por documento (lo mas confiable)
+    If sDocNorm <> "" Then
+        For j = 0 To nTope
+            If aDoc(j) <> "" Then
+                If aDoc(j) = sDocNorm Then
+                    sComo = "documento"
+                    BuscarEnLista = j
+                    Exit Function
+                End If
+            End If
+        Next j
     End If
-    ObtenerTextoCelda = s
+
+    ' 2) por nombre completo (mismas palabras, en cualquier orden)
+    If sClaBus <> "" Then
+        nCand = 0
+        For j = 0 To nTope
+            If aCla(j) <> "" Then
+                If aCla(j) = sClaBus Then
+                    nCand = nCand + 1
+                    If nCand = 1 Then BuscarEnLista = j
+                End If
+            End If
+        Next j
+        If nCand = 1 Then
+            sComo = "nombre"
+            Exit Function
+        ElseIf nCand > 1 Then
+            BuscarEnLista = -1
+            sComo = "AMBIGUO: " & nCand & " alumnos con ese nombre"
+            Exit Function
+        End If
+    End If
+
+    ' 3) por nombre parcial (todas las palabras escritas aparecen en el padron)
+    If sNomNorm <> "" Then
+        aPal = Split(sNomNorm, " ")
+        If UBound(aPal) >= 1 Then          ' al menos 2 palabras
+            nCand = 0
+            For j = 0 To nTope
+                If aNom(j) <> "" Then
+                    bTodas = True
+                    For k = 0 To UBound(aPal)
+                        If InStr(1, " " & aNom(j) & " ", " " & aPal(k) & " ", 0) = 0 Then
+                            bTodas = False
+                            Exit For
+                        End If
+                    Next k
+                    If bTodas Then
+                        nCand = nCand + 1
+                        If nCand = 1 Then BuscarEnLista = j
+                        If nCand > 1 Then Exit For
+                    End If
+                End If
+            Next j
+            If nCand = 1 Then
+                sComo = "nombre parcial - VERIFICAR"
+                Exit Function
+            ElseIf nCand > 1 Then
+                BuscarEnLista = -1
+                sComo = "AMBIGUO: coincide con varios alumnos"
+                Exit Function
+            End If
+        End If
+    End If
+
 End Function
 
-Function NormalizarDocumento(sCadena As String) As String
-    Dim i As Integer, sResultado As String, c As String
-    sResultado = ""
-    For i = 1 To Len(sCadena)
-        c = Mid(sCadena, i, 1)
-        If c >= "0" And c <= "9" Then sResultado = sResultado & c
+
+' Convierte a texto lo que devuelve getDataArray (puede ser texto o numero)
+Function ATexto(v) As String
+    If IsNull(v) Then
+        ATexto = ""
+    ElseIf VarType(v) = 8 Then
+        ATexto = Trim(v)
+    Else
+        If v = 0 Then
+            ATexto = ""
+        Else
+            ATexto = Trim(Format(v, "0"))
+        End If
+    End If
+End Function
+
+
+' Deja solo los digitos y saca los ceros de la izquierda.
+' "DNI 31036910", "31.036.910", " 31036910 " y "CI 31036910" dan todos lo mismo.
+Function NormDoc(sTexto As String) As String
+    Dim i As Long, c As String, r As String
+    For i = 1 To Len(sTexto)
+        c = Mid(sTexto, i, 1)
+        If c >= "0" And c <= "9" Then r = r & c
     Next i
-    NormalizarDocumento = sResultado
-End Function
-
-Function LimpiarDNI(sCadena As String) As String
-    Dim s As String
-    s = Trim(sCadena)
-    If UCase(Left(s, 4)) = "DNI " Then s = Mid(s, 5)
-    s = NormalizarDocumento(s)
-    LimpiarDNI = s
-End Function
-
-Function UltimaFilaConDatos(oHoja As Object, iCol As Long, filaInicio As Long, limite As Long) As Long
-    Dim f As Long
-    f = filaInicio
-    Do While ObtenerTextoCelda(oHoja, iCol, f) <> ""
-        f = f + 1
-        If f > limite Then Exit Do
+    Do While Len(r) > 1 And Left(r, 1) = "0"
+        r = Mid(r, 2)
     Loop
-    UltimaFilaConDatos = f - 1
+    NormDoc = r
 End Function
 
-Function UltimaFilaConDatosDual(oHoja As Object, iCol1 As Long, iCol2 As Long, filaInicio As Long, limite As Long) As Long
-    Dim f As Long, s1 As String, s2 As String
-    f = filaInicio
-    Do
-        s1 = ObtenerTextoCelda(oHoja, iCol1, f)
-        s2 = ObtenerTextoCelda(oHoja, iCol2, f)
-        If s1 = "" And s2 = "" Then Exit Do
-        f = f + 1
-        If f > limite Then Exit Do
+
+' MAYUSCULAS, sin acentos, sin puntuacion, con un solo espacio entre palabras.
+' "Zuñiga, Jéssica  Anabel" -> "ZUNIGA JESSICA ANABEL"
+Function TextoNormal(sTexto As String) As String
+    Dim sAcc As String, sSin As String
+    Dim i As Long, p As Long, c As String, r As String, s As String
+
+    sAcc = "ÁÀÄÂÃÅÉÈËÊÍÌÏÎÓÒÖÔÕÚÙÜÛÑÇ"
+    sSin = "AAAAAAEEEEIIIIOOOOOUUUUNC"
+
+    s = UCase(Trim(sTexto))
+    For i = 1 To Len(s)
+        c = Mid(s, i, 1)
+        p = InStr(1, sAcc, c, 0)
+        If p > 0 Then c = Mid(sSin, p, 1)
+        If Not ((c >= "A" And c <= "Z") Or (c >= "0" And c <= "9")) Then c = " "
+        If c = " " Then
+            If Len(r) > 0 Then
+                If Right(r, 1) <> " " Then r = r & " "
+            End If
+        Else
+            r = r & c
+        End If
+    Next i
+    TextoNormal = Trim(r)
+End Function
+
+
+' Ordena las palabras alfabeticamente para poder comparar sin importar el orden.
+' "PEREZ JUAN" y "JUAN PEREZ" dan la misma clave.
+Function ClaveNombre(sTexto As String) As String
+    Dim a() As String, i As Long, j As Long, t As String
+    If sTexto = "" Then Exit Function
+    a = Split(sTexto, " ")
+    For i = 0 To UBound(a) - 1
+        For j = i + 1 To UBound(a)
+            If a(j) < a(i) Then
+                t    = a(i)
+                a(i) = a(j)
+                a(j) = t
+            End If
+        Next j
+    Next i
+    ClaveNombre = Join(a, " ")
+End Function
+
+
+' Del URL del archivo se queda con el nombre, para la columna Origen.
+Function NombreDeArchivo(sURL As String) As String
+    Dim a() As String, s As String
+    a = Split(sURL, "/")
+    s = a(UBound(a))
+    Do While InStr(1, s, "%20", 0) > 0
+        s = Left(s, InStr(1, s, "%20", 0) - 1) & " " & Mid(s, InStr(1, s, "%20", 0) + 3)
     Loop
-    UltimaFilaConDatosDual = f - 1
+    NombreDeArchivo = s
+End Function
+
+
+' Ubica la fila de encabezados del reporte y en que columna esta cada dato.
+' Devuelve el numero de fila (base 0) o -1 si no la encuentra.
+Function DetectarCabecera(oHoja As Object, ByRef cNom As Long, ByRef cDoc As Long, _
+                          ByRef cMail As Long, ByRef cTel As Long) As Long
+    Dim a, r As Long, c As Long, s As String
+
+    a = oHoja.getCellRangeByPosition(0, 0, 25, 40).getDataArray()
+
+    For r = 0 To UBound(a)
+        cNom = -1 : cDoc = -1 : cMail = -1 : cTel = -1
+        For c = 0 To UBound(a(r))
+            s = TextoNormal(ATexto(a(r)(c)))
+            If s <> "" Then
+                If cNom < 0 And (InStr(1, s, "APELLIDO", 0) > 0 Or InStr(1, s, "NOMBRE", 0) > 0) Then cNom = c
+                If cDoc < 0 And InStr(1, s, "DOCUMENTO", 0) > 0 Then cDoc = c
+                If cMail < 0 And (InStr(1, s, "MAIL", 0) > 0 Or InStr(1, s, "CORREO", 0) > 0) Then cMail = c
+                If cTel < 0 And InStr(1, s, "TELEFONO", 0) > 0 Then cTel = c
+            End If
+        Next c
+        If cMail >= 0 And (cNom >= 0 Or cDoc >= 0) Then
+            DetectarCabecera = r
+            Exit Function
+        End If
+    Next r
+
+    DetectarCabecera = -1
+End Function
+
+
+' Si el padron ya esta abierto en LibreOffice lo reutiliza (y no lo cierra despues).
+Function BuscarDocAbierto(sURL As String) As Object
+    Dim oEnum As Object, oComp As Object
+    On Error Resume Next
+    oEnum = StarDesktop.Components.createEnumeration()
+    Do While oEnum.hasMoreElements()
+        oComp = oEnum.nextElement()
+        If Not IsNull(oComp) Then
+            If oComp.supportsService("com.sun.star.sheet.SpreadsheetDocument") Then
+                If oComp.getURL() = sURL Then
+                    BuscarDocAbierto = oComp
+                    Exit Function
+                End If
+            End If
+        End If
+    Loop
 End Function
