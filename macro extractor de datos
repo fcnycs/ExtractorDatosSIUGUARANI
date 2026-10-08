@@ -1,5 +1,8 @@
 REM  ==========================================================================
 REM  EXTRACTOR DE DATOS - SIU GUARANI   (v3 - modo acumulativo)
+REM
+REM  Autor: Cristian Ariel Galego
+REM  Desarrollado con asistencia de Claude (IA de Anthropic).
 REM  --------------------------------------------------------------------------
 REM  Hoja DATOS  : A = Nombre completo   B = Documento (en cualquier formato)
 REM  Hoja SALIDA : A = Nombre  B = Documento  C = Email  D = Telefono
